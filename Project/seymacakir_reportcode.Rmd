@@ -1,0 +1,1259 @@
+---
+title: "IE425project"
+author: ' SEYMA CAKIR'
+date: "30 06 2021"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+
+
+# PROJECT REPORT 
+## Bogazici University
+## Necati Aras, IE 425 
+
+**Import Data** 
+
+
+```{r, warning=FALSE}
+library(lubridate)
+library(data.table)
+library(dplyr)
+library(forecast)
+#install.packages("caret", dependencies = TRUE)
+library(caret)
+library(writexl)
+
+
+
+train <- read.csv("C:/Users/seyma/Desktop/IE425project/kobe-train.csv", header = TRUE,sep = ",")
+test <- read.csv("C:/Users/seyma/Desktop/IE425project/kobe-test.csv", header = TRUE,sep = ",")
+submission <- read.csv("C:/Users/seyma/Desktop/IE425project/kobe-sample-submission.csv", header = TRUE,sep = ",")
+
+
+```
+
+  First of all, the structure of data is examined and the variable which  are catergaric is converted to factor variable, and the game_date data refers to date of game, therefore, It conversted firstly  as a date and since there is too much date to evalute as categoric it is converted to numeric variable to show the shot accuracy dependicies with during the time. 
+
+
+
+```{r}
+
+summary(train)
+str(train)
+train$shot_made_flag  <- factor(train$shot_made_flag )
+train$action_type <- factor(train$action_type)
+train$combined_shot_type <-factor(train$combined_shot_type)
+train$game_id <- factor(train$game_id)
+train$game_event_id <- factor(train$game_event_id)
+train$playoffs <- factor(train$playoffs)
+train$shot_type  <- factor(train$shot_type)
+train$shot_zone_area  <- factor(train$shot_zone_area)
+train$shot_zone_basic  <- factor(train$shot_zone_basic)
+train$shot_zone_range   <- factor(train$shot_zone_range)
+train$team_id     <- factor(train$team_id)
+train$team_name  <- factor(train$team_name) 
+train$game_date   <- as.Date(train$game_date, format= "%d.%m.%Y") 
+train$game_date <- as.numeric(train$game_date)
+train$matchup    <-  factor(train$matchup)
+train$opponent <- factor(train$opponent)
+
+test$action_type <- factor(test$action_type)
+test$combined_shot_type <-factor(test$combined_shot_type)
+test$game_id <- factor(test$game_id)
+test$game_event_id <- factor(test$game_event_id)
+test$playoffs <- factor(test$playoffs)
+test$shot_type  <- factor(test$shot_type)
+test$shot_zone_area  <- factor(test$shot_zone_area)
+test$shot_zone_basic  <- factor(test$shot_zone_basic)
+test$shot_zone_range   <- factor(test$shot_zone_range)
+test$team_id     <- factor(test$team_id)
+test$team_name  <- factor(test$team_name) 
+test$game_date   <- as.Date(test$game_date, format= "%d.%m.%Y") 
+test$game_date <- as.numeric(test$game_date)
+test$matchup    <-  factor(test$matchup)
+test$opponent <- factor(test$opponent)
+
+ 
+```
+
+
+### Data Dictionary
+
+action_type: Different shot types (total 57)
+
+combined_shot_type: General shot types (total 6)
+
+game_event_id: Unique id to identify each game (1558 for train set)
+
+lat: latitude of the stadium
+
+lon: longitude of the stadium
+
+loc_x: x-axis location from where the shot was taken (-250 = right bottom to 250 = right top when basket is in right center)
+
+loc_y: y-axis location from where the shot was taken (-40 = right side to 900 = left side when basket is in right center)
+
+minutes_remaining: minutes remaining in a period (max 12)
+
+period and  playoffs: period of play (in general there are 4 but in case of ties it can extend, in this case till 7)
+
+season: NBA Season (1996-97 to 2015-16)
+
+seconds_remaining: seconds remaining in a period
+
+shot_distance: distance (in meters) from where the shot was taken
+
+shot_type: 2Pt or 3Pt
+
+shot_zone_area: Basketball Area from where the shot was taken (BC, C, LC, L, RC, R)
+
+shot_zone_basic: Basketball Zone from where the shot was taken (Total 7)
+
+shot_zone_range: Range (in meters) from where the shot was taken (<8, 8-16, 16-24, 24+, Back Court)
+
+team_id: Always same (LA -> id)
+
+team_name: Always same (LA)
+
+game_date: Date at which the game was played
+
+matchup and  opponent: Opponent Team and Matchups 
+
+shot_made_flag: If the shot was a hit or a miss (Dependent Variable)
+
+
+the dictionary of data taken from [Akshay Kher's Kaggle Account](https://www.kaggle.com/c/kobe-bryant-shot-selection/discussion/20888)
+
+
+
+
+
+```{r}
+
+ggplot(train, aes(x=factor(shot_made_flag)))+
+  geom_bar(stat="count", width=0.7)+
+  labs(
+    x = "made_shot_flag",
+    main = "the distribution of Kobe  Bryant Shots"
+  )+
+  theme_minimal()
+
+
+
+
+
+```
+
+
+To get more simplex model and reduce complexity of model, I will try eliminate some attributes.
+
+```{r}
+summary(train)
+```
+
+
+**the variables do not have particular difference**
+
+Since, Kobe Bryant only plays in LAL during his career, I exclude team_id and team_name.
+
+
+Since, the matcups  refers to which team opponet of LAL, I also exclude matchups.
+- the reason of matchups eliminated instead of opponent, the matchups make more complex models since it has also information which team is host.
+
+
+
+**The time dependent variables**
+
+game_id is determined by game_date and opponents,it is unique as much as game_date, I exclude game_id.
+
+the game_event_id is very depend on time remaining and period and it has many category which makes models too complex I also exclude it. 
+
+
+
+**the distance depended variables:** 
+
+And, shot_zone_area, shot_zone_range, shot_zone_basic and shot_type variables is determined by location x, location y, and distance. 
+
+lag and lon variables very standart and changes in small, I think the accuracy of shots more dependent to distance between target not the size of target area. 
+therefore, I also exclude them. 
+
+```{r, out.width= '50%'}
+
+
+ ggplot(train, aes(x=loc_x, y=loc_y)) +
+  geom_point(aes(color=shot_made_flag), alpha= 0.25) +
+  labs(title="SHOTS BY X-Y ") +
+  theme_minimal() +
+  theme(legend.position="left",
+        plot.title=element_text(hjust=0.5)) 
+
+ ggplot(train, aes(x= shot_distance, y=shot_made_flag)) +
+  geom_point(aes(color=shot_made_flag), alpha= 0.25) +
+  labs(title="SHOTS BY DISTANCE ") +
+  theme_minimal() +
+  theme(legend.position="left",
+        plot.title=element_text(hjust=0.5)) 
+
+```
+
+
+
+
+
+```{r, include=FALSE,out.width='50%' }
+
+
+ggplot(train, aes(x=lon, y=lat)) +
+  geom_point(aes(color=shot_zone_range)) +
+  labs(title="Shot Zone Range") +
+  theme_minimal() +
+  theme(legend.position="left",
+        plot.title=element_text(hjust=0.5)) 
+
+
+ggplot(train, aes(x=lon, y=lat)) +
+  geom_point(aes(color=shot_zone_basic)) +
+  labs(title="Shot Zone Basic") +
+  theme_minimal() +
+  theme(legend.position="left",
+        plot.title=element_text(hjust=0.5)) 
+ 
+ggplot(train, aes(x=lon, y=lat)) +
+  geom_point(aes(color=shot_zone_area)) +
+  labs(title="Shot Zone Area") +
+  theme_minimal() +
+  theme(legend.position="left",
+        plot.title=element_text(hjust=0.5)) 
+ 
+ggplot(train, aes(x=lon, y=lat)) +
+  geom_point(aes(color= shot_type)) +
+  labs(title="Shot Type") +
+  theme_minimal() +
+  theme(legend.position="left",
+        plot.title=element_text(hjust=0.5)) 
+
+```
+
+```{r}
+df <- train[,c("shot_made_flag","action_type","combined_shot_type", "loc_x", "loc_y","minutes_remaining","game_date", "period", "playoffs", "season", "seconds_remaining", "shot_distance", "opponent")]
+test <- test[,c("X","action_type","combined_shot_type", "loc_x", "loc_y","minutes_remaining","game_date", "period", "playoffs", "season", "seconds_remaining", "shot_distance", "opponent")]
+names(test) <- c("shot_made_flag","action_type","combined_shot_type", "loc_x", "loc_y","minutes_remaining","game_date", "period", "playoffs", "season", "seconds_remaining", "shot_distance", "opponent")
+
+
+
+```
+
+
+
+
+
+## Models 
+
+To prevent randomness in models in every run,  I use set.seed() function
+
+
+```{r}
+set.seed(425)
+```
+
+
+
+### GLM model 
+
+
+I use cross validation technique 
+
+
+
+```{r, eval=FALSE}
+
+control=trainControl(method='repeatedcv',number=10,repeats=5)
+glm <- train(shot_made_flag~., data=df, method="glm", metric="Accuracy",trControl = control)
+summary(glm)
+confusionMatrix(glm)
+varImp(glm)
+
+
+```
+
+
+Null deviance: 31792  on 23126  degrees of freedom
+
+
+Residual deviance: 28064  on 23013  degrees of freedom
+
+
+AIC: 28292
+
+
+Number of Fisher Scoring iterations: 12
+
+**glm variable importance**
+
+
+only 20 most important variables shown (out of 113)
+
+
+action_typeJump Shot                     100.00
+
+action_typeLayup Shot                    92.79
+
+action_typeTip Shot`                     91.69
+
+action_typeHook Shot`                    88.78
+
+action_typeFadeaway Jump Shot            72.65
+
+action_typeTurnaround Jump Shot          71.87
+
+action_typeFinger Roll Shot               66.93
+
+action_typeTurnaround Fadeaway shot      66.81
+
+period                                   64.64
+
+action_typeDriving Jump shot             64.62
+
+action_typeReverse Layup Shot            64.60
+
+minutes_remaining                        63.49
+
+seconds_remaining                        62.91
+
+action_typeStep Back Jump shot           62.81
+
+action_typeRunning Jump Shot              55.65
+
+action_typeDriving Layup Shot             54.16
+action_typePullup Jump shot               53.88
+
+action_typeAlley Oop Layup shot           53.60   
+
+action_typeFloating Jump shot             53.31
+
+action_typeRunning Layup Shot             50.84
+
+
+
+**Cross-Validated (10 fold, repeated 5 times) Confusion Matrix**
+
+(entries are percentual average cell counts across resamples)
+
+*************Actual
+
+Prediction   0    1 
+
+**********0 47.6  24.
+
+**********1 7.8  20.5
+             
+ 
+
+         
+                           
+ Accuracy (average) : 0.681
+
+
+
+### rpart model 
+
+
+```{r, eval=FALSE}
+
+rpart_mod = train(
+  shot_made_flag ~ .,
+  data = df,
+  method = "rpart",
+  trControl = control,
+  metric= "Accuracy",
+  tuneGrid = expand.grid(cp = c(1:100)*0.01)
+)
+
+rpart_mod
+confusionMatrix(rpart_mod)
+varImp(rpart_mod)
+
+```
+
+CART 
+
+23127 samples
+
+12 predictor
+
+2 classes: '0', '1' 
+
+No pre-processing
+
+Resampling: Cross-Validated (10 fold, repeated 5 times) 
+
+Summary of sample sizes: 20815, 20814, 20814, 20814, 20815, 20815, ... 
+
+Resampling results across tuning parameters:
+
+cp     Accuracy   Kappa    
+
+0.001  0.6795172  0.32921447
+
+0.002  0.6785833  0.3277267
+
+0.003  0.6783844  0.3277424
+
+0.004  0.6783844  0.3277424
+
+0.005  0.6783844  0.3277424
+
+0.006  0.6783844  0.3277424
+
+0.007  0.6783844  0.3277424
+
+0.008  0.6783844  0.3277424
+
+0.009  0.6783844  0.3277424
+
+0.010  0.6783844  0.3277424
+
+
+Accuracy was used to select the optimal model using the largest value.
+
+The final value used for the model was cp = 0.001.
+
+**Cross-Validated (10 fold, repeated 5 times) Confusion Matrix**
+
+(entries are percentual average cell counts across resamples)
+
+********** Actual 
+
+Prediction    0    1
+
+*********0 47.0 23.6
+
+*********1  8.4 21.0
+
+Accuracy (average) : 0.6795
+
+**rpart variable importance**
+
+only 20 most important variables shown (out of 129)
+
+
+action_typeJump Shot          100.0000
+
+combined_shot_typeDunk         74.2333
+
+combined_shot_typeJump Shot    48.6160
+
+shot_distance                  47.1314
+
+action_typeLayup Shot          31.3255
+
+action_typeDriving Layup Shot  27.9414
+
+action_typeSlam Dunk Shot      11.6487
+
+combined_shot_typeLayup         9.8157
+
+action_typeDriving Dunk Shot    5.3397
+
+game_date                       4.1191
+
+loc_y                           3.9863
+
+combined_shot_typeTip Shot      2.8608
+
+action_typeTip Shot             2.7956
+
+loc_x                           1.1062
+
+minutes_remaining               0.6360
+
+season2002-03                   0.5499
+
+season2011-12                   0.5140
+
+seconds_remaining               0.3258
+
+season2014-15                   0.1825
+
+opponentDEN                     0.1628
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### Random Forest Model 
+
+
+```{r, eval=FALSE}
+control3 <- trainControl(method='cv',number=10)
+mtry <- c(1:12)
+
+rftree1 <- train(shot_made_flag~., data=df, method = "rf", metric = 'Accuracy',trControl = control3, ntree = 100,  tuneGrid = expand.grid(.mtry = mtry))
+rftree1
+confusionMatrix(rftree1)
+varImp(rftree1)
+
+```
+
+
+Random Forest 
+
+23127 samples
+
+12 predictor
+
+2 classes: '0', '1' 
+
+No pre-processing
+
+Resampling: Cross-Validated (10 fold) 
+
+Summary of sample sizes: 20814, 20814, 20814, 20814, 20815, 20814, ... 
+
+Resampling results across tuning parameters:
+
+
+
+mtry  Accuracy   Kappa      
+
+1    0.5554977  0.004283448
+
+2    0.6245946  0.194993294
+
+3    0.6720707  0.307521928
+
+4    0.6810648  0.330586192
+
+5    0.6806324  0.330171076
+
+6    0.6817134  0.332212717
+
+7    0.6809351  0.330372175
+
+8    0.6803729  0.328966535
+
+9    0.6802863  0.328715516
+
+10    0.6794215  0.327008566
+
+11    0.6784268  0.325311178
+
+12    0.6765679  0.322031223
+
+
+Accuracy was used to select the optimal model using the largest value.
+
+The final value used for the model was mtry = 6.
+
+
+**ConfusionMatrix**
+  
+********** actual
+
+Prediction     0    1
+
+**********0   47.6 24.1
+
+**********1    7.8 20.5
+
+Accuracy (average) : 0.6817
+
+
+**rf variable importance**
+
+
+only 20 most important variables shown (out of 118)
+
+
+action_typeJump Shot            100.000
+
+shot_distance                    50.439
+
+game_date                        49.817
+
+loc_y                            49.112
+
+loc_x                            45.929
+
+seconds_remaining                43.308
+
+combined_shot_typeDunk           41.660
+
+action_typeLayup Shot            31.903
+
+minutes_remaining                30.474
+
+combined_shot_typeJump Shot      28.643
+
+action_typeRunning Jump Shot     20.505
+
+action_typeDriving Layup Shot    20.206
+
+period                           18.959
+
+combined_shot_typeLayup          14.471
+
+action_typeSlam Dunk Shot         9.298
+
+action_typeJump Bank Shot         8.543
+
+action_typePullup Jump shot       8.447
+
+action_typeTurnaround Jump Shot   7.970
+
+action_typeFadeaway Jump Shot     6.413
+
+action_typeDriving Dunk Shot      6.356
+
+
+
+```{r, eval=FALSE}
+
+rftree2 <- train(shot_made_flag~., data=df, method = "rf", metric = 'Accuracy',trControl = control3, ntree = 200,  tuneGrid = expand.grid(.mtry = mtry))
+rftree2
+confusionMatrix(rftree2)
+varImp(rftree2)
+
+```
+
+
+Random Forest 
+
+
+23127 sample
+
+12 predictor
+2 classes: '0', '1' 
+
+No pre-processing
+
+Resampling: Cross-Validated (10 fold) 
+
+Summary of sample sizes: 20814, 20815, 20814, 20814, 20814, 20814, ... 
+
+Resampling results across tuning parameters:
+
+
+mtry  Accuracy   Kappa    
+
+1    0.5538548  0.0000000
+
+2    0.6260212  0.1967935
+
+3    0.6768281  0.3182533
+
+4    0.6813682  0.3309301
+
+5    0.6812816  0.3313894
+
+6    0.6828814  0.3348682
+
+7    0.6807197  0.3299289
+
+8    0.6818437  0.3322401
+
+
+9    0.6810221  0.3306640
+
+10    0.6793360  0.3269140
+
+11    0.6789902  0.3263171
+
+12    0.6773033  0.3233134
+
+
+Accuracy was used to select the optimal model using the largest value.
+
+The final value used for the model was mtry = 6.
+
+**Confusion Matrix**
+
+(entries are percentual average cell counts across resamples)
+
+ 
+********** actual
+
+Prediction    0    1
+
+*********0 47.6 23.9
+
+*********1  7.8 20.7
+
+Accuracy (average) : 0.6829
+
+**VariableImportance**
+
+only 20 most important variables shown (out of 118)
+
+
+action_typeJump Shot            100.000
+
+shot_distance                    52.96
+
+loc_y                            48.555
+
+game_date                        46.916
+
+loc_x                            41.30
+
+seconds_remaining                39.338
+
+combined_shot_typeDunk           39.161
+
+minutes_remaining                27.692
+
+action_typeLayup Shot            25.477
+
+action_typeDriving Layup Shot    24.759
+
+combined_shot_typeJump Shot      22.351
+
+action_typeRunning Jump Shot     18.399
+
+period                           17.728
+
+combined_shot_typeLayup          11.920
+
+action_typeSlam Dunk Shot         7.853
+
+action_typeDriving Dunk Shot      7.235
+
+action_typeJump Bank Shot         7.196
+
+action_typePullup Jump shot       6.641
+
+action_typeTurnaround Jump Shot   6.306
+
+action_typeFadeaway Jump Shot     5.989
+
+
+```{r, eval=FALSE}
+rftree3 <- train(shot_made_flag~., data=df, method = "rf", metric = 'Accuracy',trControl = control3, ntree = 400,  tuneGrid = expand.grid(.mtry = mtry))
+rftree3
+confusionMatrix(rftree3)
+varImp(rftree3)
+
+```
+
+Random Forest
+
+23127 samples
+
+12 predictor
+
+2 classes: '0', '1' 
+
+No pre-processing
+
+Resampling: Cross-Validated (10 fold) 
+
+Summary of sample sizes: 20814, 20814, 20814, 20814, 20815, 20814, ... 
+
+Resampling results across tuning parameters:
+
+
+mtry  Accuracy   Kappa
+
+1    0.5538548  0.0000000
+
+2    0.6246811  0.1947518
+
+3    0.6768275  0.3188270
+
+4    0.6821891  0.3327854
+
+5    0.6817998  0.3324420
+
+6    0.6822324  0.3334287
+
+7    0.6815402  0.3318305
+
+8    0.6813677  0.3314107
+
+9    0.6812808  0.3310716
+
+10    0.6814540  0.3311948
+
+11    0.6804166  0.3294517
+
+12    0.6788598  0.3263128
+
+
+Accuracy was used to select the optimal model using the largest value.
+
+
+The final value used for the model was mtry = 6.
+
+**ConfusionMatrix**
+
+(entries are percentual average cell counts across resamples)
+ 
+**********  actual 
+
+Prediction    0    1
+
+**********0 47.6 24.0
+
+**********1  7.8 20.6
+
+
+Accuracy (average) : 0.6822
+
+**VariableImportance**
+
+
+only 20 most important variables shown (out of 118)
+
+action_typeJump Shot            100.000
+
+shot_distance                    62.940
+
+loc_y                            59.982
+
+game_date                        53.515
+
+loc_x                            50.488
+
+seconds_remaining                46.968
+
+combined_shot_typeDunk           37.425
+
+minutes_remaining                32.774
+
+action_typeLayup Shot            32.701
+
+combined_shot_typeJump Shot      26.911
+
+action_typeDriving Layup Shot    24.844
+
+action_typeRunning Jump Shot     21.355
+
+period                           20.135
+
+combined_shot_typeLayup          13.849
+
+action_typeSlam Dunk Shot        10.732
+
+action_typeJump Bank Shot        10.226
+
+action_typePullup Jump shot       9.577
+
+action_typeDriving Dunk Shot      9.207
+
+action_typeTurnaround Jump Shot   8.985
+
+action_typeFadeaway Jump Shot     7.714
+
+
+
+
+
+
+### GBM model 
+
+
+
+```{r, eval=FALSE}
+
+control1 <- trainControl(method='repeatedcv',number=10,repeats=3)
+
+gbmGrid=expand.grid(interaction.depth = c(1, 3, 5), 
+                    n.trees = c(50,100,150),
+                    shrinkage = c(0.1,0.2,0.3),
+                    n.minobsinnode = c(5,10,15))
+
+gbmtree =train(shot_made_flag~., data=df, method="gbm", metric="Accuracy", verbose = TRUE ,trControl = control1,tuneGrid = gbmGrid)
+gbmtree
+confusionMatrix(gbmtree)
+summary(gbmtree)
+
+
+```
+
+
+
+
+**Stochastic Gradient Boosting** 
+
+
+23127 samples
+
+12 predictor
+
+2 classes: '0', '1' 
+
+
+No pre-processing
+
+Resampling: Cross-Validated (10 fold)
+
+Summary of sample sizes: 20814, 20815, 20814, 20814, 20814, 20814, ... 
+
+Resampling results across tuning parameters:
+
+
+shrinkage  interaction.depth  n.minobsinnode  n.trees  Accuracy   Kappa 
+
+0.1        1                   5               50      0.6783843  0.3277080
+  
+0.1        1                   5              100      0.6791193  0.3287339
+
+0.1        1                   5              150      0.6809787  0.3319587
+
+0.1        1                  10               50      0.6783843  0.3277080
+
+0.1        1                  10              100      0.6794219  0.3292172
+
+0.1        1                  10              150      0.6808923  0.3316635
+
+0.1        1                  15               50      0.6783843  0.3277080
+
+0.1        1                  15              100      0.6792490  0.3289280
+
+0.1        1                  15              150      0.6806327  0.3311311
+
+0.1        3                   5               50      0.6800707  0.3301796
+
+0.1        3                   5              100      0.6814976  0.3323563
+
+0.1        3                   5              150      0.6819733  0.3330124
+
+0.1        3                  10               50      0.6805464  0.3311862
+
+0.1        3                  10              100      0.6814545  0.3322189
+
+0.1        3                  10              150      0.6807626  0.3304724
+
+0.1        3                  15               50      0.6801138  0.3302661
+
+0.1        3                  15              100      0.6818003  0.3328393
+
+0.1        3                  15              150      0.6819300  0.3328977
+
+0.1        5                   5               50      0.6808057  0.3310267
+
+0.1        5                   5              100      0.6818436  0.3325481
+
+0.1        5                   5              150      0.6814113  0.3315742
+
+0.1        5                  10               50      0.6811085  0.3316535
+
+0.1        5                  10              100      0.6822760  0.3335063
+
+0.1        5                  10              150      0.6819301  0.3325525
+
+0.1        5                  15               50      0.6812382  0.3319596
+
+0.1        5                  15              100      0.6821030  0.3332083
+
+0.1        5                  15              150      0.6811517  0.3310642
+
+0.2        1                   5               50      0.6795518  0.3293421
+
+0.2        1                   5              100      0.6807626  0.3311107
+
+0.2        1                   5              150      0.6811950  0.3316042
+
+0.2        1                  10               50      0.6792491  0.3289121
+
+0.2        1                  10              100      0.6812382  0.3320741
+
+0.2        1                  10              150      0.6813247  0.3318446
+
+0.2        1                  15               50      0.6795084  0.3293512
+
+0.2        1                  15              100      0.6808490  0.3313333
+
+0.2        1                  15              150      0.6818004  0.3327771
+
+0.2        3                   5               50      0.6816274  0.3325587
+
+0.2        3                   5              100      0.6810655  0.3308830
+
+0.2        3                   5              150      0.6795088  0.3275734
+
+0.2        3                  10               50      0.6810653  0.3312052
+
+0.2        3                  10              100      0.6808922  0.3306000
+
+0.2        3                  10              150      0.6794656  0.3279443
+
+0.2        3                  15               50      0.6805896  0.3302939
+
+0.2        3                  15              100      0.6803734  0.3294466
+
+0.2        3                  15              150      0.6798113  0.3288865
+
+0.2        5                   5               50      0.6806762  0.3301535
+
+0.2        5                   5              100      0.6782548  0.3259282
+
+0.2        5                   5              150      0.6759197  0.3218256
+
+0.2        5                  10               50      0.6811086  0.3309161
+
+0.2        5                  10              100      0.6788603  0.3270648
+
+0.2        5                  10              150      0.6753146  0.3206174
+
+0.2        5                  15               50      0.6805896  0.3301254
+
+0.2        5                  15              100      0.6789901  0.3271974
+
+0.2        5                  15              150      0.6774766  0.3252442
+
+0.3        1                   5               50      0.6806760  0.3312650
+
+0.3        1                   5              100      0.6822759  0.3336784
+
+0.3        1                   5              150      0.6816707  0.3321224
+
+0.3        1                  10               50      0.6802436  0.3303614
+
+0.3        1                  10              100      0.6815842  0.3324133
+
+0.3        1                  10              150      0.6812814  0.3314025
+
+0.3        1                  15               50      0.6813246  0.3324911
+
+0.3        1                  15              100      0.6814544  0.3321186
+
+0.3        1                  15              150      0.6814544  0.331712
+
+0.3        3                   5               50      0.6805030  0.3298635
+
+0.3        3                   5              100      0.6795084  0.3281496
+
+0.3        3                   5              150      0.6762654  0.3219931
+
+0.3        3                  10               50      0.6812383  0.3313827
+
+0.3        3                  10              100      0.6778657  0.3250268
+
+0.3        3                  10              150      0.6767415  0.3240266
+
+0.3        3                  15               50      0.6816707  0.3321431
+
+0.3        3                  15              100      0.6792930  0.3277838
+
+0.3        3                  15              150      0.6775200  0.3250899
+
+0.3        5                   5               50      0.6784710  0.3262163
+
+0.3        5                   5              100      0.6748387  0.3199911
+
+0.3        5                   5              150      0.6714659  0.3144349
+
+0.3        5                  10               50      0.6780820  0.3251887
+
+0.3        5                  10              100      0.6736284  0.3179590
+
+0.3        5                  10              150      0.6715098  0.3150819
+
+0.3        5                  15               50      0.6796818  0.3287325
+
+0.3        5                  15              100      0.6756171  0.3219952
+
+0.3        5                  15              150      0.6712935  0.3141821
+
+
+Accuracy was used to select the optimal model using the largest value.
+
+The final values used for the model were n.trees = 100,
+
+interaction.depth = 5, shrinkage = 0.1 and n.minobsinnode = 10.
+
+ 
+Cross-Validated (10 fold) Confusion Matrix 
+
+(entries are percentual average cell counts across resamples)
+
+**ConfusionMatrix**
+
+**********  Actual
+
+Prediction     0    1
+
+*********0     47.6   24.0
+
+*********1     7.8    20.6
+
+Accuracy (average) : 0.6823
+
+
+**rel.inf**
+
+action_typeJump Shot                       44.5254897
+
+action_typeLayup Shot                      13.9767373
+
+game_date                                   6.52941966
+
+combined_shot_typeDunk                      5.62550149
+
+shot_distance                               5.2329435
+
+loc_x                                       3.30741365
+
+loc_y                                       3.11581554
+
+seconds_remaining                           3.05209344
+
+period                                      1.55793732
+
+minutes_remaining                           1.53448513
+
+combined_shot_typeTip Shot                  1.45944227
+
+action_typeHook Shot                        0.90817769
+
+action_typeRunning Jump Shot                0.82012466
+
+action_typeDriving Layup Shot               0.66825591
+
+action_typeJump Bank Shot                   0.62084988
+
+action_typePullup Jump shot                 0.59640382
+
+action_typeFadeaway Jump Shot               0.50155421
+
+action_typeDunk Shot                        0.37300552
+
+action_typeTurnaround Jump Shot             0.37035990
+
+action_typeTip Shot                         0.25951266
+
+combined_shot_typeLayup                     0.24059397
+
+opponentNYK                                 0.23938501
+
+season1998-99                               0.22816634
+
+season2003-04                               0.21670095
+
+opponentMIL                                 0.18891456
+
+action_typeDriving Finger Roll Layup Shot   0.18710471
+
+opponentHOU                                 0.17793387
+
+season1999-00                               0.17051469
+
+action_typeReverse Layup Shot               0.15882683
+
+opponentNJN                                 0.14995526
+
+opponentGSW                                 0.14901869
+
+opponentORL                                 0.14712958
+
+opponentIND                                 0.14424394
+
+action_typeRunning Bank shot                0.14397776
+
+opponentPHI                                 0.14293665
+
+action_typeFinger Roll Shot                 0.13718082
+
+opponentSAC                                 0.13234048
+
+opponentDEN                                 0.13077240
+
+action_typeTurnaround Bank shot             0.13050590
+
+opponentOKC                                 0.11252563
+
+action_typeRunning Hook Shot                0.11172618
+
+action_typeDriving Finger Roll Shot         0.10738288
+
+opponentWAS                                 0.10198850
+
+opponentPHX                                 0.09955965
+
+season1997-98                               0.09575661
+
+season2005-06                               0.08604931
+
+season2008-09                               0.08283710
+
+action_typeFadeaway Bank shot               0.08258236
+
+season2010-11                               0.07860733
+
+season2006-07                               0.07595702
+
+playoffs1                                   0.07559550
+
+opponentPOR                                 0.07319416
+
+opponentUTA                                 0.07256524
+
+action_typeSlam Dunk Shot                   0.06432455
+
+season2000-01                               0.06215142
+
+opponentMIN                                 0.05673567
+
+opponentSAS                                 0.05611338
+
+opponentCHA                                 0.05064148
+
+season2002-03                               0.04710334
+
+opponentBOS                                 0.04246438
+
+opponentTOR                                 0.03943597
+
+action_typeFloating Jump shot               0.03685613
+
+action_typeFinger Roll Layup Shot           0.03612042
+
+
+
+
+## Make Prediction 
+
+
+I used gbm whixh  n.trees = 100, interaction.depth = 5, shrinkage = 0.1 and n.minobsinnode = 10. and 
+random forest which is mtry= 6 ntree=200 model to predict. 
+
+Since the accuracy values are bigger than others.
+
+
+```{r, eval=FALSE}
+gbmprediction <- predict(gbmtree,test,type= "prob")
+submission$shot_made_flag <- gbmprediction[,2]
+write_xlsx(submission,"C:/Users/seyma/Desktop/IE425project/submission.xlsx")
+ 
+rfprediction <- predict(rftree2,test,type= "prob")
+submission$shot_made_flag <- rfprediction[,2]
+write_xlsx(submission,"C:/Users/seyma/Desktop/IE425project/submission2.xlsx")
+  
+
+ 
+ 
+```
+
+
+
+
+
+
+
+
+
